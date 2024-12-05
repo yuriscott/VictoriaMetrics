@@ -34,8 +34,12 @@ import (
 )
 
 var (
+	//natsServerURLs = flagutil.NewArrayString("natsServer.url", "Remote storage URL to write data to. It must support either VictoriaMetrics remote write protocol "+
+	//	"or Prometheus remote_write protocol. Example url: nats://<nats-server>:4222/<subjects> . "+
+	//	"Pass multiple -remoteWrite.url options in order to replicate the collected data to multiple remote storage systems. "+
+	//	"The data can be sharded among the configured remote storage systems if -remoteWrite.shardByURL flag is set")
 	remoteWriteURLs = flagutil.NewArrayString("remoteWrite.url", "Remote storage URL to write data to. It must support either VictoriaMetrics remote write protocol "+
-		"or Prometheus remote_write protocol. Example url: http://<victoriametrics-host>:8428/api/v1/write . "+
+		"or Prometheus remote_write protocol. Example url: http://<victoriametrics-host>:8428/api/v1/write or nats://<nats-server>:4222/<subjects>. "+
 		"Pass multiple -remoteWrite.url options in order to replicate the collected data to multiple remote storage systems. "+
 		"The data can be sharded among the configured remote storage systems if -remoteWrite.shardByURL flag is set")
 	remoteWriteMultitenantURLs = flagutil.NewArrayString("remoteWrite.multitenantURL", "Base path for multitenant remote storage URL to write data to. "+
@@ -663,7 +667,7 @@ var (
 type remoteWriteCtx struct {
 	idx int
 	fq  *persistentqueue.FastQueue
-	c   *client
+	c   Client
 
 	sas                 atomic.Pointer[streamaggr.Aggregators]
 	streamAggrKeepInput bool
@@ -703,14 +707,16 @@ func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, maxInmemoryBlocks in
 		return 0
 	})
 
-	var c *client
+	var c Client
 	switch remoteWriteURL.Scheme {
 	case "http", "https":
 		c = newHTTPClient(argIdx, remoteWriteURL.String(), sanitizedURL, fq, *queues)
+	case "nats":
+		c = newNatClient(argIdx, remoteWriteURL.String(), sanitizedURL, fq, *queues)
 	default:
-		logger.Fatalf("unsupported scheme: %s for remoteWriteURL: %s, want `http`, `https`", remoteWriteURL.Scheme, sanitizedURL)
+		logger.Fatalf("unsupported scheme: %s for remoteWriteURL: %s, want `http`, `https`, `nats`", remoteWriteURL.Scheme, sanitizedURL)
 	}
-	c.init(argIdx, *queues, sanitizedURL)
+	c.Init(argIdx, *queues, sanitizedURL)
 
 	// Initialize pss
 	sf := significantFigures.GetOptionalArg(argIdx)
@@ -723,7 +729,7 @@ func newRemoteWriteCtx(argIdx int, remoteWriteURL *url.URL, maxInmemoryBlocks in
 	}
 	pss := make([]*pendingSeries, pssLen)
 	for i := range pss {
-		pss[i] = newPendingSeries(fq, c.useVMProto, sf, rd)
+		pss[i] = newPendingSeries(fq, c.UseVMProto(), sf, rd)
 	}
 
 	rwctx := &remoteWriteCtx{
@@ -917,7 +923,7 @@ func (rwctx *remoteWriteCtx) reinitStreamAggr() {
 
 var tssPool = &sync.Pool{
 	New: func() interface{} {
-		a := []prompbmarshal.TimeSeries{}
+		var a []prompbmarshal.TimeSeries
 		return &a
 	},
 }

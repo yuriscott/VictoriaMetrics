@@ -77,6 +77,12 @@ var (
 	awsSecretKey = flagutil.NewArrayString("remoteWrite.aws.secretKey", "Optional AWS SecretKey to use for the corresponding -remoteWrite.url if -remoteWrite.aws.useSigv4 is set")
 )
 
+type Client interface {
+	MustStop()
+	Init(argIdx int, concurrency int, sanitizedURL string)
+	UseVMProto() bool
+}
+
 type client struct {
 	sanitizedURL   string
 	remoteWriteURL string
@@ -107,7 +113,7 @@ type client struct {
 	stopCh chan struct{}
 }
 
-func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persistentqueue.FastQueue, concurrency int) *client {
+func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persistentqueue.FastQueue, concurrency int) Client {
 	authCfg, err := getAuthConfig(argIdx)
 	if err != nil {
 		logger.Fatalf("cannot initialize auth config for -remoteWrite.url=%q: %s", remoteWriteURL, err)
@@ -176,7 +182,7 @@ func newHTTPClient(argIdx int, remoteWriteURL, sanitizedURL string, fq *persiste
 	return c
 }
 
-func (c *client) init(argIdx, concurrency int, sanitizedURL string) {
+func (c *client) Init(argIdx, concurrency int, sanitizedURL string) {
 	if bytesPerSec := rateLimit.GetOptionalArg(argIdx); bytesPerSec > 0 {
 		logger.Infof("applying %d bytes per second rate limit for -remoteWrite.url=%q", bytesPerSec, sanitizedURL)
 		c.rl.perSecondLimit = int64(bytesPerSec)
@@ -211,6 +217,10 @@ func (c *client) MustStop() {
 	close(c.stopCh)
 	c.wg.Wait()
 	logger.Infof("stopped client for -remoteWrite.url=%q", c.sanitizedURL)
+}
+
+func (c *client) UseVMProto() bool {
+	return c.useVMProto
 }
 
 func getAuthConfig(argIdx int) (*promauth.Config, error) {
