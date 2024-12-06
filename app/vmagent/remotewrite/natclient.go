@@ -178,6 +178,8 @@ func (c *natClient) publishNatsBlock(con *nats.Conn, block []byte) bool {
 	c.rl.register(len(block), c.stopCh)
 	maxRetryDuration := timeutil.AddJitterToDuration(time.Minute)
 	retryDuration := timeutil.AddJitterToDuration(time.Second)
+	retriesCount := 0
+	maxRetriesCount := 10
 again:
 	startTime := time.Now()
 	err := con.Publish(c.subject, block)
@@ -189,8 +191,8 @@ again:
 		if retryDuration > maxRetryDuration {
 			retryDuration = maxRetryDuration
 		}
-		logger.Warnf("couldn't send a block with size %d bytes to %q: %s; re-sending the block in %.3f seconds",
-			len(block), c.sanitizedURL, err, retryDuration.Seconds())
+		logger.Warnf("couldn't send a block with size %d bytes to %q: %s during retry $%d; re-sending the block in %.3f seconds",
+			len(block), c.sanitizedURL, err, retriesCount, retryDuration.Seconds())
 		t := timerpool.Get(retryDuration)
 		select {
 		case <-c.stopCh:
@@ -199,8 +201,15 @@ again:
 		case <-t.C:
 			timerpool.Put(t)
 		}
-		c.retriesCount.Inc()
 		metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_remotewrite_requests_total{url=%q,protocal="nat",status_code="500"}`, c.sanitizedURL)).Inc()
+		c.retriesCount.Inc()
+		retriesCount++
+		if retriesCount > maxRetriesCount {
+			logger.Warnf("couldn't send a block with size %d bytes to %q: %s during retry $%d; retriesCount reach the maxRetries #%d, skip re-send",
+				len(block), c.sanitizedURL, err, retriesCount, maxRetriesCount)
+			c.packetsDropped.Inc()
+			return true
+		}
 		goto again
 	} else {
 		metrics.GetOrCreateCounter(fmt.Sprintf(`vmagent_remotewrite_requests_total{url=%q,protocal="nat",status_code="200"}`, c.sanitizedURL)).Inc()
